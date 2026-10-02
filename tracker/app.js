@@ -151,6 +151,7 @@
     reminders: [],       // { id, text, type:'weekly'|'date', days:[0-6], date, time, enabled, lastFired }
     view: 'week',
     anchor: new Date(),
+    focus: null,         // section id shown full screen, or null for the overview
   };
   // Entries are saved one record per month (wmt.entries.<email>.<YYYY-MM>) so no record grows too large.
   const dataKey = () => `wmt.data.${state.user.email}`;
@@ -212,6 +213,7 @@
   function toast(msg, ms = 3500) {
     const t = el('div', { class: 'toast', text: msg });
     $('toasts').append(t);
+    while ($('toasts').children.length > 2) $('toasts').firstChild.remove(); // keep only the latest messages
     setTimeout(() => t.remove(), ms);
   }
 
@@ -227,6 +229,8 @@
     $('userLabel').textContent = state.user.name ? `Hi, ${state.user.name} · ${state.user.email}` : state.user.email;
     load();
     state.anchor = new Date();
+    state.focus = null;
+    focusFromHash();
     render();
     renderReminderBadge();
     startReminderLoop();
@@ -605,7 +609,7 @@
 
     const summary = $('summary');
     summary.replaceChildren(
-      ...stats.map((x) => el('div', { class: `stat ${x.s.id}` },
+      ...stats.map((x) => el('button', { type: 'button', class: `stat ${x.s.id}`, title: `Open ${x.s.name} full screen`, onclick: () => openFocus(x.s.id) },
         el('div', { class: 'label', text: `${x.s.icon} ${x.s.name}` }),
         el('div', { class: 'value' }, fmtHours(x.hours), el('small', { text: ' h' })),
         el('div', { class: 'sub', text: state.view === 'month' ? `${x.days} active day${x.days === 1 ? '' : 's'}` : `${x.list.length} entr${x.list.length === 1 ? 'y' : 'ies'}` })
@@ -616,6 +620,18 @@
         el('div', { class: 'sub', text: `${activeDays} of ${totalDays} days active` })
       )
     );
+
+    // Full-screen section
+    document.body.classList.toggle('focus-mode', !!state.focus);
+    $('focusBar').hidden = !state.focus;
+    summary.hidden = !!state.focus;
+    if (state.focus) {
+      $('chartCard').hidden = true;
+      const x = stats.find((y) => y.s.id === state.focus);
+      renderFocusTabs();
+      $('sections').replaceChildren(renderFocus(x, p, tK));
+      return;
+    }
 
     // Bar chart (monthly)
     $('chartCard').hidden = state.view !== 'month';
@@ -657,11 +673,118 @@
 
     return el('section', { class: `section ${x.s.id}`, 'aria-label': x.s.name },
       el('div', { class: 'section-head' },
-        el('div', null,
-          el('h2', null, el('span', { 'aria-hidden': 'true', text: x.s.icon }), x.s.name),
+        el('button', { type: 'button', class: 'open-btn', title: `Open ${x.s.name} full screen`, onclick: () => openFocus(x.s.id) },
+          el('h2', null, el('span', { 'aria-hidden': 'true', text: x.s.icon }), x.s.name, el('span', { class: 'expand', 'aria-hidden': 'true', text: '⤢' })),
           el('div', { class: 'hrs', text: `${fmtHours(x.hours)} h this ${state.view}` })),
         el('button', { class: 'add', onclick: () => openEntry(x.s.id) }, '+ Add')),
       body);
+  }
+
+  // ================= Full-screen section =================
+  function openFocus(id) {
+    state.focus = id;
+    try { if (location.hash !== '#' + id) location.hash = id; } catch (e) {}
+    render();
+    window.scrollTo(0, 0);
+    $('focusBack').focus({ preventScroll: true });
+  }
+  function closeFocus() {
+    if (!state.focus) return;
+    const id = state.focus;
+    state.focus = null;
+    try { if (location.hash) history.replaceState(null, '', location.pathname + location.search); } catch (e) {
+      try { location.hash = ''; } catch (e2) {}
+    }
+    render();
+    const btn = document.querySelector(`.section.${id} .open-btn`);
+    if (btn) btn.focus({ preventScroll: false });
+  }
+  function focusFromHash() {
+    let h = '';
+    try { h = decodeURIComponent(location.hash.slice(1)); } catch (e) {}
+    const id = SECTIONS.some((s) => s.id === h) ? h : null;
+    if (id === state.focus || !state.user) return;
+    state.focus = id;
+    render();
+  }
+  window.addEventListener('hashchange', focusFromHash);
+  $('focusBack').addEventListener('click', closeFocus);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && state.focus && !document.querySelector('dialog[open]')) closeFocus();
+  });
+  function renderFocusTabs() {
+    $('focusTabs').replaceChildren(...SECTIONS.map((s) => el('button', {
+      type: 'button', role: 'tab', class: `chip ${s.id}`, 'aria-selected': String(s.id === state.focus),
+      onclick: () => openFocus(s.id),
+    }, el('span', { 'aria-hidden': 'true', text: s.icon }), ' ', s.name)));
+  }
+
+  function renderFocus(x, p, tK) {
+    const days = [];
+    for (let d = new Date(p.start); d <= p.end; d = addDays(d, 1)) days.push(toKey(d));
+    const perDay = new Map(days.map((k) => [k, 0]));
+    for (const e of x.list) perDay.set(e.date, (perDay.get(e.date) || 0) + (Number(e.hours) || 0));
+    const best = [...perDay].reduce((a, b) => (b[1] > a[1] ? b : a), ['', 0]);
+    const elapsed = days.filter((k) => k <= tK).length || days.length;
+
+    const stat = (label, value, sub) => el('div', { class: 'fstat' },
+      el('div', { class: 'label', text: label }), el('div', { class: 'value', text: value }), sub ? el('div', { class: 'sub', text: sub }) : null);
+    const statsRow = el('div', { class: 'fstats' },
+      stat('Total hours', `${fmtHours(x.hours)} h`, `this ${state.view}`),
+      stat('Active days', String(x.days), `of ${days.length} days`),
+      stat('Average', `${fmtHours(x.days ? x.hours / x.days : 0)} h`, 'per active day'),
+      stat('Best day', best[1] ? `${fmtHours(best[1])} h` : '—', best[1] ? `${dayName(best[0]).slice(0, 3)}, ${fmtShort(fromKey(best[0]))}` : `in ${elapsed} day${elapsed === 1 ? '' : 's'} so far`));
+
+    const head = el('div', { class: 'section-head focus-head' },
+      el('div', null,
+        el('h2', null, el('span', { 'aria-hidden': 'true', text: x.s.icon }), x.s.name),
+        el('div', { class: 'hrs', text: `${x.list.length} entr${x.list.length === 1 ? 'y' : 'ies'} · ${$('periodLabel').textContent}` })),
+      el('button', { class: 'add', onclick: () => openEntry(x.s.id) }, '+ Add'));
+
+    // Table: reuse the section renderer's table, without its header.
+    const table = renderSection(x, tK).lastChild;
+
+    return el('section', { class: `section focus ${x.s.id}`, 'aria-label': `${x.s.name} full screen` },
+      head,
+      el('div', { class: 'focus-body' }, statsRow, renderDailyChart(x, days, perDay, tK), table));
+  }
+
+  function renderDailyChart(x, days, perDay, tK) {
+    const maxVal = Math.max(...perDay.values());
+    const top = Math.max(1, Math.ceil(maxVal));
+    const tip = el('div', { class: 'tip', role: 'status', hidden: true });
+    const showTip = (col, k, h) => {
+      tip.textContent = `${dayName(k)}, ${fmtShort(fromKey(k))} · ${h ? fmtHours(h) + ' h' : 'no entry'}`;
+      tip.hidden = false;
+      const plot = col.parentElement.getBoundingClientRect(), r = col.getBoundingClientRect();
+      tip.style.left = `${Math.min(Math.max(r.left - plot.left + r.width / 2, 70), plot.width - 70)}px`;
+    };
+    const isWeek = days.length <= 7;
+    const cols = days.map((k) => {
+      const h = perDay.get(k) || 0;
+      const d = fromKey(k);
+      const label = isWeek ? DAY_NAMES[d.getDay()].slice(0, 3) : String(d.getDate());
+      const minor = !isWeek && d.getDate() !== 1 && d.getDate() % 5 !== 0;
+      const col = el('button', {
+        type: 'button',
+        class: `col${k === tK ? ' today' : ''}${minor ? ' minor' : ''}`,
+        'aria-label': `${dayName(k)} ${fmtDate(k)}: ${h ? fmtHours(h) + ' hours' : 'no entry'}. Add an entry for this day.`,
+        onclick: () => openEntry(x.s.id, null, k),
+      },
+        el('span', { class: 'bar-area' }, el('span', { class: 'bar', style: `height:${(h / top) * 100}%` })),
+        el('span', { class: 'xl', text: label }));
+      col.addEventListener('pointerenter', () => showTip(col, k, h));
+      col.addEventListener('focus', () => showTip(col, k, h));
+      col.addEventListener('pointerleave', () => { tip.hidden = true; });
+      col.addEventListener('blur', () => { tip.hidden = true; });
+      return col;
+    });
+    const grid = [top, top / 2, 0].map((v) => el('div', { class: 'gl', style: `bottom:${(v / top) * 100}%` }, el('span', { text: `${fmtHours(v)}h` })));
+    return el('div', { class: 'daily' },
+      el('div', { class: 'daily-head' },
+        el('h3', { text: 'Hours per day' }),
+        el('span', { class: 'muted', text: 'Tap a day to log hours for it' })),
+      el('div', { class: `plot${isWeek ? ' week' : ''}` }, el('div', { class: 'grid' }, grid), el('div', { class: 'cols' }, cols), tip));
   }
 
   // ================= Entry dialog =================
@@ -673,7 +796,7 @@
     const v = $('entryDate').value;
     $('entryDay').value = /^\d{4}-\d{2}-\d{2}$/.test(v) ? dayName(v) : '';
   }
-  function openEntry(sectionId, entry) {
+  function openEntry(sectionId, entry, presetDate) {
     editingId = entry ? entry.id : null;
     $('entryTitle').textContent = entry ? 'Edit entry' : 'Add entry';
     $('entrySection').value = sectionId || SECTIONS[0].id;
@@ -683,7 +806,7 @@
       const p = period();
       if (defDate < toKey(p.start) || defDate > toKey(p.end)) defDate = toKey(p.start);
     }
-    $('entryDate').value = entry ? entry.date : defDate;
+    $('entryDate').value = entry ? entry.date : (presetDate || defDate);
     $('entryHours').value = entry ? entry.hours : '';
     $('entryNotes').value = entry ? entry.notes : '';
     $('entryDelete').hidden = !entry;
@@ -737,7 +860,7 @@
     toast('🗑️ Entry deleted');
     return true;
   }
-  $('fab').addEventListener('click', () => openEntry(SECTIONS[0].id));
+  $('fab').addEventListener('click', () => openEntry(state.focus || SECTIONS[0].id));
 
   // ================= Reminders =================
   const reminderDialog = $('reminderDialog');

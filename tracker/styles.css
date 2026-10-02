@@ -415,3 +415,70 @@ label.check input { width: auto; margin: 0; }
 #fileText { font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .dialog-actions { flex-wrap: wrap; }
 :focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+/* ============ Full-screen section ============ */
+button.stat { font: inherit; text-align: left; cursor: pointer; color: inherit; width: 100%; }
+button.stat:hover { transform: translateY(-1px); }
+button.stat:not(.total):hover { border-color: var(--c); }
+.open-btn {
+  font: inherit; color: inherit; text-align: left;
+  background: none; border: 0; padding: 0; cursor: pointer; min-width: 0; flex: 1;
+}
+.open-btn .expand { font-size: .9rem; opacity: .55; margin-left: 2px; transition: opacity .15s; }
+.open-btn:hover .expand, .open-btn:focus-visible .expand { opacity: 1; }
+.section-head:has(.open-btn:hover) { filter: brightness(.98); }
+
+.focus-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip {
+  font: inherit; font-size: .85rem; font-weight: 600;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  border-radius: 999px; padding: .35rem .8rem; cursor: pointer;
+}
+.chip[aria-selected="true"] { background: var(--c); border-color: var(--c); color: var(--surface); }
+
+.focus-mode .sections { grid-template-columns: minmax(0, 1fr); }
+.section.focus { min-height: calc(100dvh - 210px); }
+.focus-head { padding: 1rem 1.25rem; }
+.focus-head h2 { font-size: 1.4rem; }
+.focus-body { display: grid; gap: 16px; padding: 1rem 1.25rem 1.25rem; }
+.section.focus .table-wrap { border: 1px solid var(--border); border-radius: 12px; }
+.section.focus td.notes { min-width: 220px; }
+
+.fstats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.fstat { background: var(--c-soft); border-radius: 12px; padding: .75rem 1rem; min-width: 0; }
+.fstat .label { font-size: .75rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.fstat .value { font-size: 1.5rem; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; line-height: 1.25; }
+.fstat .sub { font-size: .8rem; color: var(--muted); }
+
+.daily-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.daily-head h3 { margin: 0; }
+.daily-head .muted { font-size: .8rem; }
+.plot { position: relative; height: 200px; padding-left: 34px; }
+.grid { position: absolute; inset: 0 0 22px 34px; pointer-events: none; }
+.gl { position: absolute; left: 0; right: 0; border-top: 1px solid var(--border); }
+.gl span { position: absolute; right: calc(100% + 6px); top: -.6em; font-size: .7rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.cols { position: absolute; inset: 0 0 0 34px; display: flex; gap: 2px; }
+.col {
+  flex: 1; min-width: 0; display: flex; flex-direction: column;
+  font: inherit; color: var(--muted); background: none; border: 0; padding: 0; cursor: pointer; border-radius: 6px;
+}
+.col:hover .bar-area, .col:focus-visible .bar-area { background: var(--c-soft); }
+.bar-area { flex: 1; display: flex; align-items: flex-end; justify-content: center; border-radius: 6px 6px 0 0; }
+.bar { display: block; width: 70%; max-width: 44px; background: var(--c); border-radius: 4px 4px 0 0; transition: height .3s ease; }
+.xl { height: 22px; line-height: 22px; font-size: .72rem; text-align: center; font-variant-numeric: tabular-nums; }
+.col.today .xl { color: var(--c); font-weight: 800; }
+.tip {
+  position: absolute; top: -6px; transform: translate(-50%, -100%);
+  background: var(--text); color: var(--bg);
+  font-size: .8rem; font-weight: 600; white-space: nowrap;
+  padding: .3rem .6rem; border-radius: 8px; pointer-events: none; z-index: 2;
+}
+
+@media (max-width: 700px) {
+  .fstats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .col.minor .xl { visibility: hidden; }
+  .focus-body { padding: .85rem; }
+  .focus-head { padding: .85rem; }
+  .section.focus { min-height: 0; }
+}
