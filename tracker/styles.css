@@ -156,7 +156,7 @@ textarea { resize: vertical; }
 
 /* ============ Top bar ============ */
 .topbar {
-  position: sticky; top: 0; z-index: 10;
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 10;
   display: flex; align-items: center; justify-content: space-between;
   gap: 12px;
   padding: 10px 16px;
