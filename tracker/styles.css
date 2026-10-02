@@ -482,3 +482,14 @@ button.stat:not(.total):hover { border-color: var(--c); }
   .focus-head { padding: .85rem; }
   .section.focus { min-height: 0; }
 }
+
+/* ============ Save status & empty hint ============ */
+.save-status {
+  display: block; margin-top: 1px;
+  font: inherit; font-size: .72rem; font-weight: 600;
+  background: none; border: 0; padding: 0; color: var(--muted); cursor: default;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 46vw; text-align: left;
+}
+.save-status.bad { color: var(--danger); cursor: pointer; text-decoration: underline; }
+.save-status:disabled { opacity: 1; }
+.empty-hint { margin: 0 0 16px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

@@ -40,6 +40,9 @@
     uid: null,
     queues: new Map(),
     warned: false,
+    pending: 0,
+    failed: new Set(),     // keys whose last save failed
+    localSnapshot: new Map(), // what this browser held at start (used to recover entries into cloud storage)
     get(key, fallback) {
       // Return a copy so callers can't mutate the cache by accident.
       return this.mem.has(key) ? JSON.parse(JSON.stringify(this.mem.get(key))) : fallback;
@@ -50,9 +53,13 @@
     remove(key) { this.mem.delete(key); return this.persist(key, DELETE); },
     async persist(key, value) {
       let ok = false;
+      this.pending++; renderSaveStatus();
       if (local.ok) ok = value === DELETE ? (local.remove(key), true) : local.set(key, value);
       if (this.mode === 'cloud') ok = await this.cloudWrite(key, value);
       if (this.mode === 'memory') ok = false;
+      this.pending--;
+      if (ok) this.failed.delete(key); else if (this.mode !== 'memory') this.failed.add(key);
+      renderSaveStatus();
       if (!ok && !this.warned) {
         this.warned = true;
         toast(this.mode === 'memory'
@@ -61,6 +68,11 @@
       }
       if (ok) this.warned = false;
       return ok;
+    },
+    retryFailed() {
+      const keys = [...this.failed];
+      this.warned = false;
+      return Promise.all(keys.map((k) => this.persist(k, this.mem.has(k) ? this.mem.get(k) : DELETE)));
     },
     // One write at a time per document; a burst of changes collapses into the latest value.
     cloudWrite(key, value) {
@@ -119,8 +131,16 @@
           const snap = await db.collection(`data/users/${id}`).limit(1000).get();
           store.db = db; store.uid = id; store.mode = 'cloud';
           for (const d of snap.docs) { const body = d.data(); if (body && 'v' in body) store.mem.set(decKey(d.id), body.v); }
-          // First use of cloud storage: bring over what this browser had (e.g. an account made before this update).
-          if (store.mem.size === 0) for (const [k, v] of localData) { store.mem.set(k, v); store.cloudWrite(k, v); }
+          if (store.mem.size === 0) {
+            // First use of cloud storage: bring over everything this browser had.
+            for (const [k, v] of localData) { store.mem.set(k, v); store.cloudWrite(k, v); }
+          } else {
+            // Accounts that exist only in this browser are copied up; entries are merged on sign-in (see load()).
+            for (const [k, v] of localData) {
+              if ((k.startsWith('wmt.account.') || k.startsWith('wmt.profile.')) && !store.mem.has(k)) { store.mem.set(k, v); store.cloudWrite(k, v); }
+            }
+            store.localSnapshot = localData;
+          }
         }
       } catch (e) { store.mode = 'memory'; store.db = null; }
     }
@@ -129,6 +149,26 @@
       for (const [k, v] of localData) store.mem.set(k, v);
     }
   }
+
+  function renderSaveStatus() {
+    const btn = document.getElementById('saveStatus');
+    if (!btn) return;
+    let text, cls = '', title = '';
+    if (store.mode === 'memory') { text = '⚠️ Not saving in this view'; cls = 'bad'; title = 'Open the link in a normal browser tab to keep your data.'; }
+    else if (store.failed.size) { text = '⚠️ Not saved · Tap to retry'; cls = 'bad'; }
+    else if (store.pending) { text = 'Saving…'; }
+    else if (store.mode === 'cloud') { text = '☁️ Saved to your Claude account'; cls = 'good'; }
+    else { text = '💾 Saved on this device'; cls = 'good'; }
+    btn.textContent = text;
+    btn.className = `save-status ${cls}`;
+    btn.title = title;
+    btn.disabled = !store.failed.size;
+  }
+  document.getElementById('saveStatus').addEventListener('click', async () => {
+    if (!store.failed.size) return;
+    await store.retryFailed();
+    toast(store.failed.size ? '⚠️ Still not saved. Check your internet connection and try again.' : '✅ Saved');
+  });
 
   // ================= Date helpers (local time, no UTC shifts) =================
   const pad = (n) => String(n).padStart(2, '0');
@@ -152,6 +192,7 @@
     view: 'week',
     anchor: new Date(),
     focus: null,         // section id shown full screen, or null for the overview
+    deleted: new Set(),  // ids of deleted entries, so a copy kept in another browser doesn't bring them back
   };
   // Entries are saved one record per month (wmt.entries.<email>.<YYYY-MM>) so no record grows too large.
   const dataKey = () => `wmt.data.${state.user.email}`;
@@ -168,14 +209,35 @@
     // Older versions kept every entry inside the data record.
     const legacy = Array.isArray(d.entries) ? d.entries : [];
     for (const e of legacy) if (e && e.id && !byId.has(e.id)) byId.set(e.id, e);
-    state.entries = [...byId.values()].filter((e) => SECTIONS.some((s) => s.id === e.section) && /^\d{4}-\d{2}-\d{2}$/.test(e.date));
+    state.deleted = new Set(Array.isArray(d.deleted) ? d.deleted.map(String) : []);
     state.reminders = Array.isArray(d.reminders) ? d.reminders.map(cleanReminder).filter(Boolean) : [];
+
+    // Recover entries and reminders that only this browser has (saved here before, or while cloud saving failed).
+    let recovered = 0;
+    const snap = store.localSnapshot, email = state.user.email;
+    if (snap.size) {
+      const localLists = [];
+      for (const [k, v] of snap) if (k.startsWith(entriesPrefix(email)) && Array.isArray(v)) localLists.push(v);
+      const ld = snap.get(`wmt.data.${email}`);
+      if (ld && Array.isArray(ld.entries)) localLists.push(ld.entries);
+      for (const list of localLists) for (const e of list) {
+        if (e && e.id && !byId.has(e.id) && !state.deleted.has(String(e.id))) { byId.set(e.id, e); recovered++; }
+      }
+      if (ld && Array.isArray(ld.reminders)) {
+        const have = new Set(state.reminders.map((r) => r.id));
+        for (const raw of ld.reminders) { const r = cleanReminder(raw); if (r && !have.has(r.id)) { state.reminders.push(r); have.add(r.id); } }
+      }
+    }
+
+    state.entries = [...byId.values()].filter((e) => SECTIONS.some((s) => s.id === e.section) && /^\d{4}-\d{2}-\d{2}$/.test(e.date) && isFinite(Number(e.hours)));
     state.view = d.view === 'month' ? 'month' : 'week';
     savedMonths = new Map();
-    for (const k of store.keys(entriesPrefix(state.user.email))) savedMonths.set(k.slice(-7), JSON.stringify(store.get(k, [])));
-    savedData = legacy.length ? '' : JSON.stringify({ reminders: d.reminders || [], view: d.view || 'week' });
-    if (legacy.length) save(); // move old entries into monthly records
+    for (const k of store.keys(entriesPrefix(email))) savedMonths.set(k.slice(-7), JSON.stringify(store.get(k, [])));
+    savedData = legacy.length ? '' : JSON.stringify(dataRecord(d.reminders || [], d.view || 'week', d.deleted || []));
+    if (legacy.length || recovered) save(); // move old entries into monthly records / upload recovered ones
+    if (recovered) setTimeout(() => toast(`✅ Recovered ${recovered} entr${recovered === 1 ? 'y' : 'ies'} saved in this browser and synced them to your account.`, 7000), 300);
   }
+  const dataRecord = (reminders, view, deleted) => ({ reminders, view, deleted: [...deleted].slice(-5000) });
   function save() {
     const email = state.user.email;
     const groups = new Map();
@@ -191,7 +253,7 @@
       if (list.length) { store.set(entriesPrefix(email) + m, list); savedMonths.set(m, json); }
       else { store.remove(entriesPrefix(email) + m); savedMonths.delete(m); }
     }
-    const data = { reminders: state.reminders, view: state.view };
+    const data = dataRecord(state.reminders, state.view, state.deleted);
     const json = JSON.stringify(data);
     if (json !== savedData) { store.set(dataKey(), data); savedData = json; }
   }
@@ -228,6 +290,7 @@
     $('appScreen').hidden = false;
     $('userLabel').textContent = state.user.name ? `Hi, ${state.user.name} · ${state.user.email}` : state.user.email;
     load();
+    renderSaveStatus();
     state.anchor = new Date();
     state.focus = null;
     focusFromHash();
@@ -540,6 +603,7 @@
       if (ids.has(id)) continue;
       ids.add(id);
       state.entries.push({ id, section: x.section, date: x.date, hours, notes: String(x.notes || ''), updatedAt: Number(x.updatedAt) || Date.now() });
+      state.deleted.delete(id);
       added++;
     }
     if (Array.isArray(data.reminders)) {
@@ -620,6 +684,16 @@
         el('div', { class: 'sub', text: `${activeDays} of ${totalDays} days active` })
       )
     );
+
+    // Entries exist, but none in the period on screen: point to them.
+    const hint = $('emptyHint');
+    hint.hidden = inPeriod.length > 0 || state.entries.length === 0;
+    if (!hint.hidden) {
+      const latest = state.entries.reduce((a, e) => (e.date > a ? e.date : a), '');
+      hint.replaceChildren(
+        `No entries in this ${state.view}. You have ${state.entries.length} saved entr${state.entries.length === 1 ? 'y' : 'ies'}; the latest is on ${fmtDate(latest)}. `,
+        el('button', { type: 'button', class: 'btn primary small', onclick: () => { state.anchor = fromKey(latest); render(); } }, 'Show latest entries'));
+    }
 
     // Full-screen section
     document.body.classList.toggle('focus-mode', !!state.focus);
@@ -856,6 +930,7 @@
     });
     if (!ok) return false;
     state.entries = state.entries.filter((x) => x.id !== id);
+    state.deleted.add(String(id));
     save(); render();
     toast('🗑️ Entry deleted');
     return true;
