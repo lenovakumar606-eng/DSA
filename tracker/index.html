@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#4f46e5">
+  <title>Weekly &amp; Monthly Tracker</title>
+  <link rel="stylesheet" href="styles.css">
+  <script>
+    // Apply saved theme before paint to avoid a flash.
+    try {
+      var t = localStorage.getItem('wmt.theme');
+      if (t === 'dark' || t === 'light') document.documentElement.dataset.theme = t;
+    } catch (e) {}
+  </script>
+</head>
+<body>
+
+  <!-- ============ LOGIN ============ -->
+  <main id="loginScreen" class="login" hidden>
+    <div class="login-card">
+      <div class="login-logo" aria-hidden="true">
+        <span class="dot study"></span><span class="dot ai"></span><span class="dot content"></span><span class="dot instagram"></span>
+      </div>
+      <h1>Weekly &amp; Monthly Tracker</h1>
+      <p class="muted">Log your Study, AI Learning, Content Creation and Instagram work, one day at a time.</p>
+      <form id="loginForm" novalidate>
+        <label for="loginEmail">Email</label>
+        <input id="loginEmail" type="email" autocomplete="email" placeholder="you@example.com" required>
+        <label for="loginName">Your name <span class="muted">(optional)</span></label>
+        <input id="loginName" type="text" autocomplete="given-name" placeholder="e.g. Kumar">
+        <p id="loginError" class="error" role="alert"></p>
+        <button type="submit" class="btn primary block">Continue</button>
+      </form>
+      <p class="fineprint">Your entries are saved in this browser and kept separate for each email.</p>
+    </div>
+  </main>
+
+  <!-- ============ APP ============ -->
+  <div id="appScreen" hidden>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-dots" aria-hidden="true"><span class="dot study"></span><span class="dot ai"></span><span class="dot content"></span><span class="dot instagram"></span></span>
+        <div>
+          <div class="brand-title">Tracker</div>
+          <div class="brand-sub" id="userLabel"></div>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button class="icon-btn" id="reminderBtn" title="Reminders" aria-label="Reminders">🔔<span class="badge" id="reminderCount" hidden></span></button>
+        <button class="icon-btn" id="themeBtn" title="Toggle dark mode" aria-label="Toggle dark mode">🌙</button>
+        <button class="icon-btn" id="menuBtn" title="More" aria-label="More options" aria-haspopup="true" aria-expanded="false">⋯</button>
+        <div class="menu" id="menu" hidden>
+          <button id="exportBtn">⬇️ Export backup (JSON)</button>
+          <button id="importBtn">⬆️ Import backup</button>
+          <button id="logoutBtn">🚪 Log out</button>
+        </div>
+        <input type="file" id="importFile" accept="application/json,.json" hidden>
+      </div>
+    </header>
+
+    <div id="reminderBanner" class="banner" hidden></div>
+
+    <main class="container">
+      <div class="controls">
+        <div class="tabs" role="tablist" aria-label="View">
+          <button role="tab" id="tabWeek" aria-selected="true" data-view="week">Weekly</button>
+          <button role="tab" id="tabMonth" aria-selected="false" data-view="month">Monthly</button>
+        </div>
+        <div class="period-nav">
+          <button class="icon-btn" id="prevBtn" aria-label="Previous period">‹</button>
+          <div class="period-label" id="periodLabel"></div>
+          <button class="icon-btn" id="nextBtn" aria-label="Next period">›</button>
+          <button class="btn ghost small" id="todayBtn">Today</button>
+        </div>
+      </div>
+
+      <section class="summary" id="summary" aria-label="Totals"></section>
+
+      <section class="chart-card" id="chartCard" hidden>
+        <h2>Hours per section</h2>
+        <div class="bars" id="chart"></div>
+      </section>
+
+      <div class="sections" id="sections"></div>
+    </main>
+
+    <button class="fab" id="fab" aria-label="Add entry">＋</button>
+  </div>
+
+  <!-- ============ ENTRY DIALOG ============ -->
+  <dialog id="entryDialog" class="dialog">
+    <form id="entryForm" method="dialog">
+      <h2 id="entryTitle">Add entry</h2>
+      <label for="entrySection">Section</label>
+      <select id="entrySection" required></select>
+      <div class="row">
+        <div>
+          <label for="entryDate">Date</label>
+          <input id="entryDate" type="date" required>
+        </div>
+        <div>
+          <label for="entryDay">Day</label>
+          <input id="entryDay" type="text" readonly tabindex="-1">
+        </div>
+      </div>
+      <label for="entryHours">Hours</label>
+      <div class="hours-input">
+        <button type="button" class="btn ghost small" data-step="-0.5" aria-label="Minus half hour">−½</button>
+        <input id="entryHours" type="number" min="0" max="24" step="0.25" inputmode="decimal" placeholder="0" required>
+        <button type="button" class="btn ghost small" data-step="0.5" aria-label="Plus half hour">+½</button>
+      </div>
+      <label for="entryNotes">What I learned / What I did</label>
+      <textarea id="entryNotes" rows="4" placeholder="e.g. Solved 5 array problems on two pointers"></textarea>
+      <p id="entryError" class="error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn danger ghost" id="entryDelete" hidden>Delete</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn ghost" id="entryCancel">Cancel</button>
+        <button type="submit" class="btn primary" id="entrySave">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ============ REMINDER DIALOG ============ -->
+  <dialog id="reminderDialog" class="dialog">
+    <div class="dialog-head">
+      <h2>Reminders</h2>
+      <button type="button" class="icon-btn" id="reminderClose" aria-label="Close">✕</button>
+    </div>
+    <div id="notifStatus" class="notif-status"></div>
+    <ul class="reminder-list" id="reminderList"></ul>
+
+    <form id="reminderForm">
+      <h3>New reminder</h3>
+      <label for="remText">Message</label>
+      <input id="remText" type="text" maxlength="120" placeholder="e.g. Log today's study hours" required>
+
+      <fieldset class="seg">
+        <legend>When</legend>
+        <label><input type="radio" name="remType" value="weekly" checked> Repeat on days</label>
+        <label><input type="radio" name="remType" value="date"> One date</label>
+      </fieldset>
+
+      <div id="remWeekly" class="weekday-picker" role="group" aria-label="Days of the week"></div>
+      <div id="remDateWrap" hidden>
+        <label for="remDate">Date</label>
+        <input id="remDate" type="date">
+      </div>
+
+      <label for="remTime">Time</label>
+      <input id="remTime" type="time" value="21:00" required>
+      <p id="remError" class="error" role="alert"></p>
+      <button type="submit" class="btn primary block">Add reminder</button>
+    </form>
+    <p class="fineprint">In-app reminders fire while this page is open. For reminders when the page is closed, tap <b>📅 Calendar</b> on a reminder to add it to your phone or laptop calendar.</p>
+  </dialog>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
