@@ -392,3 +392,26 @@ fieldset.seg input { width: auto; margin: 0; }
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* ============ Auth & extra dialogs ============ */
+.auth-tabs { display: flex; width: 100%; margin: .5rem 0 .25rem; }
+.auth-tabs button { flex: 1; }
+.pw-field { position: relative; }
+.pw-field input { padding-right: 4.25rem; }
+.pw-toggle {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  font: inherit; font-size: .8rem; font-weight: 700;
+  background: var(--surface-2); color: var(--text);
+  border: 0; border-radius: 7px; padding: .3rem .6rem; cursor: pointer;
+}
+label.check { display: flex; align-items: center; gap: 8px; font-weight: 500; margin-top: .9rem; cursor: pointer; }
+label.check input { width: auto; margin: 0; }
+.link-btn {
+  display: block; margin: .75rem auto 0;
+  font: inherit; font-size: .85rem; font-weight: 600;
+  background: none; border: 0; color: var(--primary); cursor: pointer; text-decoration: underline;
+}
+.small-dialog { width: min(400px, calc(100vw - 32px)); }
+#fileText { font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.dialog-actions { flex-wrap: wrap; }
+:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }

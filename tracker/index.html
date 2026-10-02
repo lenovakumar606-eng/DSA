@@ -24,15 +24,35 @@
       </div>
       <h1>Weekly &amp; Monthly Tracker</h1>
       <p class="muted">Log your Study, AI Learning, Content Creation and Instagram work, one day at a time.</p>
+      <div class="tabs auth-tabs" role="tablist" aria-label="Sign in or create account">
+        <button type="button" role="tab" id="modeSignIn" aria-selected="true">Sign in</button>
+        <button type="button" role="tab" id="modeSignUp" aria-selected="false">Create account</button>
+      </div>
       <form id="loginForm" novalidate>
         <label for="loginEmail">Email</label>
         <input id="loginEmail" type="email" autocomplete="email" placeholder="you@example.com" required>
-        <label for="loginName">Your name <span class="muted">(optional)</span></label>
-        <input id="loginName" type="text" autocomplete="given-name" placeholder="e.g. Kumar">
+        <div id="nameWrap" hidden>
+          <label for="loginName">Your name <span class="muted">(optional)</span></label>
+          <input id="loginName" type="text" autocomplete="given-name" placeholder="e.g. Kumar">
+        </div>
+        <label for="loginPassword">Password</label>
+        <div class="pw-field">
+          <input id="loginPassword" type="password" autocomplete="current-password" placeholder="At least 6 characters" required>
+          <button type="button" class="pw-toggle" data-target="loginPassword" aria-label="Show password">Show</button>
+        </div>
+        <div id="confirmWrap" hidden>
+          <label for="loginConfirm">Confirm password</label>
+          <div class="pw-field">
+            <input id="loginConfirm" type="password" autocomplete="new-password" placeholder="Type it again">
+            <button type="button" class="pw-toggle" data-target="loginConfirm" aria-label="Show password">Show</button>
+          </div>
+        </div>
+        <label class="check"><input id="loginRemember" type="checkbox" checked> Keep me signed in on this device</label>
         <p id="loginError" class="error" role="alert"></p>
-        <button type="submit" class="btn primary block">Continue</button>
+        <button type="submit" class="btn primary block" id="loginSubmit">Sign in</button>
       </form>
-      <p class="fineprint">Your entries are saved in this browser and kept separate for each email.</p>
+      <button type="button" class="link-btn" id="forgotBtn">Forgot password?</button>
+      <p class="fineprint">Your entries are saved in this browser and kept separate for each account.</p>
     </div>
   </main>
 
@@ -53,6 +73,7 @@
         <div class="menu" id="menu" hidden>
           <button id="exportBtn">⬇️ Export backup (JSON)</button>
           <button id="importBtn">⬆️ Import backup</button>
+          <button id="changePwBtn">🔑 Change password</button>
           <button id="logoutBtn">🚪 Log out</button>
         </div>
         <input type="file" id="importFile" accept="application/json,.json" hidden>
@@ -154,6 +175,60 @@
       <button type="submit" class="btn primary block">Add reminder</button>
     </form>
     <p class="fineprint">In-app reminders fire while this page is open. For reminders when the page is closed, tap <b>📅 Calendar</b> on a reminder to add it to your phone or laptop calendar.</p>
+  </dialog>
+
+  <!-- ============ CONFIRM DIALOG (replaces browser confirm()) ============ -->
+  <dialog id="confirmDialog" class="dialog small-dialog">
+    <form method="dialog">
+      <h2 id="confirmTitle">Are you sure?</h2>
+      <p id="confirmText" class="muted"></p>
+      <div id="confirmTypeWrap" hidden>
+        <label for="confirmType" id="confirmTypeLabel"></label>
+        <input id="confirmType" type="text" autocomplete="off">
+      </div>
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn ghost" id="confirmNo">Cancel</button>
+        <button type="button" class="btn primary" id="confirmYes">Delete</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ============ CHANGE PASSWORD DIALOG ============ -->
+  <dialog id="pwDialog" class="dialog small-dialog">
+    <form id="pwForm" novalidate>
+      <h2>Change password</h2>
+      <label for="pwCurrent">Current password</label>
+      <input id="pwCurrent" type="password" autocomplete="current-password" required>
+      <label for="pwNew">New password</label>
+      <input id="pwNew" type="password" autocomplete="new-password" placeholder="At least 6 characters" required>
+      <label for="pwNew2">Confirm new password</label>
+      <input id="pwNew2" type="password" autocomplete="new-password" required>
+      <p id="pwError" class="error" role="alert"></p>
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn ghost" id="pwCancel">Cancel</button>
+        <button type="submit" class="btn primary">Save password</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ============ FILE DIALOG (copy or download backup / calendar) ============ -->
+  <dialog id="fileDialog" class="dialog">
+    <div class="dialog-head">
+      <h2 id="fileTitle">File</h2>
+      <button type="button" class="icon-btn" id="fileClose" aria-label="Close">✕</button>
+    </div>
+    <p id="fileHelp" class="muted"></p>
+    <textarea id="fileText" rows="8" spellcheck="false"></textarea>
+    <p id="fileError" class="error" role="alert"></p>
+    <div class="dialog-actions">
+      <span class="spacer"></span>
+      <button type="button" class="btn ghost" id="fileCopy">Copy</button>
+      <button type="button" class="btn primary" id="fileDownload">Download</button>
+      <button type="button" class="btn ghost" id="fileChoose" hidden>Choose file…</button>
+      <button type="button" class="btn primary" id="fileImport" hidden>Import</button>
+    </div>
   </dialog>
 
   <div class="toasts" id="toasts" aria-live="polite"></div>

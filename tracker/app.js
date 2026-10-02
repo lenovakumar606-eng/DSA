@@ -56,7 +56,7 @@
   function load() {
     const d = store.get(dataKey(), {});
     state.entries = Array.isArray(d.entries) ? d.entries : [];
-    state.reminders = Array.isArray(d.reminders) ? d.reminders : [];
+    state.reminders = Array.isArray(d.reminders) ? d.reminders.map(cleanReminder).filter(Boolean) : [];
     state.view = d.view === 'month' ? 'month' : 'week';
   }
   function save() {
@@ -99,29 +99,168 @@
     renderReminderBadge();
     startReminderLoop();
   }
-  $('loginForm').addEventListener('submit', (e) => {
+  // ---- Password hashing (PBKDF2-SHA256, salted; the password itself is never stored) ----
+  const PBKDF2_ITERATIONS = 150000;
+  const accountKey = (email) => `wmt.account.${email}`;
+  const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+  const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+  async function hashPassword(password, saltBytes, iterations) {
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+    const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: saltBytes, iterations }, key, 256);
+    return b64(bits);
+  }
+  async function makeCredential(password) {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    return { salt: b64(salt), iterations: PBKDF2_ITERATIONS, hash: await hashPassword(password, salt, PBKDF2_ITERATIONS) };
+  }
+  async function checkPassword(account, password) {
+    const h = await hashPassword(password, unb64(account.salt), account.iterations);
+    // Constant-time compare.
+    let diff = h.length ^ account.hash.length;
+    for (let i = 0; i < Math.max(h.length, account.hash.length); i++) diff |= (h.charCodeAt(i) || 0) ^ (account.hash.charCodeAt(i) || 0);
+    return diff === 0;
+  }
+  const cryptoOk = () => !!(window.crypto && crypto.subtle && crypto.getRandomValues);
+
+  // Session: localStorage when "keep me signed in", otherwise only for this tab.
+  function readSession() {
+    let s = store.get(SESSION_KEY, null);
+    if (!s) { try { s = JSON.parse(sessionStorage.getItem(SESSION_KEY) || 'null'); } catch (e) { s = null; } }
+    // Ignore sessions from before passwords existed, or for deleted accounts.
+    return s && s.email && store.get(accountKey(s.email), null) ? s : null;
+  }
+  function writeSession(user, remember) {
+    store.remove(SESSION_KEY);
+    try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
+    if (remember) store.set(SESSION_KEY, user);
+    else { try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(user)); } catch (e) {} }
+  }
+
+  let authMode = 'signin';
+  function setAuthMode(mode) {
+    authMode = mode;
+    const up = mode === 'signup';
+    $('modeSignIn').setAttribute('aria-selected', String(!up));
+    $('modeSignUp').setAttribute('aria-selected', String(up));
+    $('nameWrap').hidden = !up;
+    $('confirmWrap').hidden = !up;
+    $('forgotBtn').hidden = up;
+    $('loginPassword').autocomplete = up ? 'new-password' : 'current-password';
+    $('loginSubmit').textContent = up ? 'Create account' : 'Sign in';
+    $('loginError').textContent = '';
+  }
+  $('modeSignIn').addEventListener('click', () => setAuthMode('signin'));
+  $('modeSignUp').addEventListener('click', () => setAuthMode('signup'));
+  document.querySelectorAll('.pw-toggle').forEach((b) => b.addEventListener('click', () => {
+    const input = $(b.dataset.target);
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    b.textContent = show ? 'Hide' : 'Show';
+    b.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+  }));
+
+  let loginBusy = false;
+  $('loginForm').addEventListener('submit', async (e) => {
     e.preventDefault();
+    if (loginBusy) return;
+    const err = (m) => { $('loginError').textContent = m; };
     const email = $('loginEmail').value.trim().toLowerCase();
-    const name = $('loginName').value.trim();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
-      $('loginError').textContent = 'Please enter a valid email address.';
+    const password = $('loginPassword').value;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return err('Please enter a valid email address.');
+    if (password.length < 6) return err('Password must be at least 6 characters.');
+    if (!cryptoOk()) return err('This browser cannot secure passwords here. Open the page over https or as a local file in Chrome, Edge, Firefox or Safari.');
+    const account = store.get(accountKey(email), null);
+
+    loginBusy = true;
+    $('loginSubmit').disabled = true;
+    try {
+      if (authMode === 'signup') {
+        if (account) return err('An account with this email already exists. Sign in instead.');
+        if (password !== $('loginConfirm').value) return err('The two passwords do not match.');
+        const name = $('loginName').value.trim() || store.get(`wmt.profile.${email}`, {}).name || '';
+        if (!store.set(accountKey(email), { name, ...(await makeCredential(password)), createdAt: Date.now() })) return;
+        state.user = { email, name };
+      } else {
+        if (!account) {
+          // Data saved before passwords existed: ask the user to set one.
+          const legacy = store.get(`wmt.data.${email}`, null);
+          return err(legacy ? 'This email has saved entries but no password yet. Choose “Create account” to set one; your entries are kept.' : 'No account found for this email. Choose “Create account”.');
+        }
+        if (!(await checkPassword(account, password))) {
+          await new Promise((r) => setTimeout(r, 600)); // slow down guessing
+          return err('Wrong password. Try again.');
+        }
+        state.user = { email, name: account.name || '' };
+      }
+      err('');
+      writeSession(state.user, $('loginRemember').checked);
+      $('loginPassword').value = '';
+      $('loginConfirm').value = '';
+      showApp();
+    } catch (ex) {
+      err('Something went wrong while checking the password. Please try again.');
+    } finally {
+      loginBusy = false;
+      $('loginSubmit').disabled = false;
+    }
+  });
+
+  $('forgotBtn').addEventListener('click', async () => {
+    const email = $('loginEmail').value.trim().toLowerCase();
+    if (!email || !store.get(accountKey(email), null)) {
+      $('loginError').textContent = 'Type your account email above first, then tap “Forgot password?”.';
       return;
     }
+    const ok = await askConfirm({
+      title: 'Reset this account?',
+      text: 'Passwords are stored only on this device, so they cannot be recovered or emailed. You can reset the account, but this permanently erases all entries and reminders saved for this email on this device.',
+      typeToConfirm: email,
+      yes: 'Erase and reset',
+    });
+    if (!ok) return;
+    store.remove(accountKey(email));
+    store.remove(`wmt.data.${email}`);
+    store.remove(`wmt.profile.${email}`);
+    setAuthMode('signup');
     $('loginError').textContent = '';
-    // Keep a name previously saved for this email if none was typed now.
-    const known = store.get(`wmt.profile.${email}`, {});
-    state.user = { email, name: name || known.name || '' };
-    store.set(`wmt.profile.${email}`, { name: state.user.name });
-    store.set(SESSION_KEY, state.user);
-    showApp();
+    toast('Account reset. Create a new password to start again.');
   });
+
   $('logoutBtn').addEventListener('click', () => {
     closeMenu();
     store.remove(SESSION_KEY);
+    try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
     stopReminderLoop();
     state.user = null;
     $('loginForm').reset();
+    setAuthMode('signin');
     showLogin();
+  });
+
+  // ---- Change password ----
+  const pwDialog = $('pwDialog');
+  $('changePwBtn').addEventListener('click', () => {
+    closeMenu();
+    $('pwForm').reset();
+    $('pwError').textContent = '';
+    pwDialog.showModal();
+    $('pwCurrent').focus();
+  });
+  $('pwCancel').addEventListener('click', () => pwDialog.close());
+  $('pwForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const err = (m) => { $('pwError').textContent = m; };
+    const account = store.get(accountKey(state.user.email), null);
+    if (!account) return err('Account not found. Please sign out and create it again.');
+    const cur = $('pwCurrent').value, nw = $('pwNew').value;
+    if (nw.length < 6) return err('New password must be at least 6 characters.');
+    if (nw !== $('pwNew2').value) return err('The new passwords do not match.');
+    try {
+      if (!(await checkPassword(account, cur))) return err('Current password is wrong.');
+      if (!store.set(accountKey(state.user.email), { ...account, ...(await makeCredential(nw)) })) return;
+    } catch (ex) { return err('Could not change the password. Please try again.'); }
+    pwDialog.close();
+    toast('🔑 Password changed');
   });
 
   // ================= Theme =================
@@ -149,37 +288,129 @@
   });
   document.addEventListener('click', (e) => { if (!$('menu').contains(e.target)) closeMenu(); });
 
-  $('exportBtn').addEventListener('click', () => {
-    closeMenu();
-    const data = { app: 'weekly-monthly-tracker', version: 1, email: state.user.email, exportedAt: new Date().toISOString(), entries: state.entries, reminders: state.reminders };
-    download(`tracker-backup-${todayKey()}.json`, JSON.stringify(data, null, 2), 'application/json');
+  // ---- In-page confirm (browser confirm() is blocked in some app views) ----
+  const confirmDialog = $('confirmDialog');
+  function askConfirm({ title, text, yes = 'Delete', typeToConfirm = null }) {
+    return new Promise((resolve) => {
+      $('confirmTitle').textContent = title;
+      $('confirmText').textContent = text;
+      $('confirmYes').textContent = yes;
+      $('confirmTypeWrap').hidden = !typeToConfirm;
+      $('confirmType').value = '';
+      $('confirmTypeLabel').textContent = typeToConfirm ? `Type ${typeToConfirm} to confirm` : '';
+      $('confirmYes').disabled = !!typeToConfirm;
+      $('confirmType').oninput = () => { $('confirmYes').disabled = $('confirmType').value.trim().toLowerCase() !== typeToConfirm; };
+      const done = (v) => { confirmDialog.onclose = null; if (confirmDialog.open) confirmDialog.close(); resolve(v); };
+      $('confirmYes').onclick = () => done(true);
+      $('confirmNo').onclick = () => done(false);
+      confirmDialog.onclose = () => done(false); // Esc key
+      confirmDialog.showModal();
+      (typeToConfirm ? $('confirmType') : $('confirmNo')).focus();
+    });
+  }
+
+  // ---- File dialog: copy or download (downloads are blocked in some views), or paste to import ----
+  const fileDialog = $('fileDialog');
+  let fileDialogData = null;
+  function openFileDialog({ mode, title, help, name, content, type }) {
+    fileDialogData = { name, content, type };
+    const exporting = mode === 'export';
+    $('fileTitle').textContent = title;
+    $('fileHelp').textContent = help;
+    $('fileText').value = exporting ? content : '';
+    $('fileText').readOnly = exporting;
+    $('fileText').placeholder = exporting ? '' : 'Paste your backup JSON here, or choose a backup file.';
+    $('fileError').textContent = '';
+    $('fileCopy').hidden = !exporting;
+    $('fileDownload').hidden = !exporting;
+    $('fileChoose').hidden = exporting;
+    $('fileImport').hidden = exporting;
+    fileDialog.showModal();
+    if (!exporting) $('fileText').focus();
+  }
+  $('fileClose').addEventListener('click', () => fileDialog.close());
+  $('fileCopy').addEventListener('click', () => {
+    const ta = $('fileText');
+    const fallback = () => { ta.focus(); ta.select(); toast('Text selected. Press Ctrl+C (or Copy) to copy it.'); };
+    try {
+      navigator.clipboard.writeText(ta.value).then(() => toast('📋 Copied'), fallback);
+    } catch (e) { fallback(); }
   });
-  $('importBtn').addEventListener('click', () => { closeMenu(); $('importFile').click(); });
+  $('fileDownload').addEventListener('click', () => {
+    const d = fileDialogData;
+    if (d) download(d.name, d.content, d.type);
+  });
+  $('fileChoose').addEventListener('click', () => $('importFile').click());
   $('importFile').addEventListener('change', async (e) => {
     const file = e.target.files[0];
     e.target.value = '';
     if (!file) return;
-    try {
-      const data = JSON.parse(await file.text());
-      if (!Array.isArray(data.entries)) throw new Error('bad file');
-      const valid = data.entries.filter((x) => x && SECTIONS.some((s) => s.id === x.section) && /^\d{4}-\d{2}-\d{2}$/.test(x.date) && isFinite(x.hours));
-      const ids = new Set(state.entries.map((x) => x.id));
-      let added = 0;
-      for (const x of valid) {
-        if (ids.has(x.id)) continue;
-        state.entries.push({ id: x.id || uid(), section: x.section, date: x.date, hours: Number(x.hours), notes: String(x.notes || ''), updatedAt: x.updatedAt || Date.now() });
-        added++;
-      }
-      if (Array.isArray(data.reminders)) {
-        const rIds = new Set(state.reminders.map((r) => r.id));
-        for (const r of data.reminders) if (r && r.id && !rIds.has(r.id) && r.time) state.reminders.push(r);
-      }
-      save(); render(); renderReminderBadge();
-      toast(`✅ Imported ${added} new entr${added === 1 ? 'y' : 'ies'}.`);
-    } catch (err) {
-      toast('⚠️ That file is not a valid tracker backup.');
-    }
+    try { $('fileText').value = await file.text(); }
+    catch (err) { $('fileError').textContent = 'Could not read that file.'; }
   });
+  $('fileImport').addEventListener('click', () => {
+    const added = importBackup($('fileText').value);
+    if (added == null) { $('fileError').textContent = 'That is not a valid tracker backup. Paste the full JSON from “Export backup”.'; return; }
+    fileDialog.close();
+    toast(`✅ Imported ${added} new entr${added === 1 ? 'y' : 'ies'}.`);
+  });
+
+  $('exportBtn').addEventListener('click', () => {
+    closeMenu();
+    const data = { app: 'weekly-monthly-tracker', version: 1, email: state.user.email, exportedAt: new Date().toISOString(), entries: state.entries, reminders: state.reminders };
+    openFileDialog({
+      mode: 'export',
+      title: 'Export backup',
+      help: `${state.entries.length} entries and ${state.reminders.length} reminders. Download the file, or copy the text and keep it somewhere safe (notes, email to yourself).`,
+      name: `tracker-backup-${todayKey()}.json`,
+      content: JSON.stringify(data, null, 2),
+      type: 'application/json',
+    });
+  });
+  $('importBtn').addEventListener('click', () => {
+    closeMenu();
+    openFileDialog({ mode: 'import', title: 'Import backup', help: 'Entries you already have are kept. Only new entries and reminders are added.' });
+  });
+
+  const isTime = (t) => typeof t === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(t);
+  const isDateKey = (d) => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d) && !isNaN(fromKey(d));
+  function cleanReminder(r) {
+    if (!r || typeof r !== 'object' || !isTime(r.time) || typeof r.text !== 'string' || !r.text.trim()) return null;
+    if (r.type === 'date') {
+      if (!isDateKey(r.date)) return null;
+      return { id: String(r.id || uid()), text: r.text.trim().slice(0, 120), type: 'date', days: [], date: r.date, time: r.time, enabled: r.enabled !== false, lastFired: isDateKey(r.lastFired) ? r.lastFired : null };
+    }
+    const days = Array.isArray(r.days) ? [...new Set(r.days.map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))] : [];
+    if (!days.length) return null;
+    return { id: String(r.id || uid()), text: r.text.trim().slice(0, 120), type: 'weekly', days, date: null, time: r.time, enabled: r.enabled !== false, lastFired: isDateKey(r.lastFired) ? r.lastFired : null };
+  }
+  // Returns the number of entries added, or null if the text is not a valid backup.
+  function importBackup(text) {
+    let data;
+    try { data = JSON.parse(text); } catch (e) { return null; }
+    if (!data || !Array.isArray(data.entries)) return null;
+    const ids = new Set(state.entries.map((x) => x.id));
+    let added = 0;
+    for (const x of data.entries) {
+      if (!x || !SECTIONS.some((s) => s.id === x.section) || !isDateKey(x.date)) continue;
+      const hours = Number(x.hours);
+      if (!isFinite(hours) || hours < 0 || hours > 24) continue;
+      const id = x.id ? String(x.id) : uid();
+      if (ids.has(id)) continue;
+      ids.add(id);
+      state.entries.push({ id, section: x.section, date: x.date, hours, notes: String(x.notes || ''), updatedAt: Number(x.updatedAt) || Date.now() });
+      added++;
+    }
+    if (Array.isArray(data.reminders)) {
+      const rIds = new Set(state.reminders.map((r) => r.id));
+      for (const raw of data.reminders) {
+        const r = cleanReminder(raw);
+        if (r && !rIds.has(r.id)) { rIds.add(r.id); state.reminders.push(r); }
+      }
+    }
+    save(); render(); renderReminderBadge();
+    return added;
+  }
   function download(name, content, type) {
     const url = URL.createObjectURL(new Blob([content], { type }));
     const a = el('a', { href: url, download: name });
@@ -331,8 +562,8 @@
     $('entryHours').value = v;
   }));
   $('entryCancel').addEventListener('click', () => entryDialog.close());
-  $('entryDelete').addEventListener('click', () => {
-    if (editingId && deleteEntry(editingId)) entryDialog.close();
+  $('entryDelete').addEventListener('click', async () => {
+    if (editingId && await deleteEntry(editingId)) entryDialog.close();
   });
   $('entryForm').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -356,10 +587,14 @@
     render();
     toast(editingId ? '✅ Entry updated' : '✅ Entry added');
   });
-  function deleteEntry(id) {
+  async function deleteEntry(id) {
     const e = state.entries.find((x) => x.id === id);
     if (!e) return false;
-    if (!confirm(`Delete this ${SECTIONS.find((s) => s.id === e.section).name} entry from ${fmtDate(e.date)}?`)) return false;
+    const ok = await askConfirm({
+      title: 'Delete entry?',
+      text: `${SECTIONS.find((s) => s.id === e.section).name} · ${fmtDate(e.date)} · ${fmtHours(e.hours)} h. This cannot be undone.`,
+    });
+    if (!ok) return false;
     state.entries = state.entries.filter((x) => x.id !== id);
     save(); render();
     toast('🗑️ Entry deleted');
@@ -424,7 +659,8 @@
       el('div', { class: 'r-actions' },
         el('button', { type: 'button', class: 'btn ghost small', title: r.enabled ? 'Pause' : 'Resume', onclick: () => { r.enabled = !r.enabled; save(); renderReminderList(); renderReminderBadge(); } }, r.enabled ? '⏸' : '▶️'),
         el('button', { type: 'button', class: 'btn ghost small', title: 'Add to calendar', onclick: () => exportIcs(r) }, '📅 Calendar'),
-        el('button', { type: 'button', class: 'btn ghost small danger', title: 'Delete', onclick: () => {
+        el('button', { type: 'button', class: 'btn ghost small danger', title: 'Delete', onclick: async () => {
+          if (!await askConfirm({ title: 'Delete reminder?', text: `“${r.text}” · ${remWhen(r)}` })) return;
           state.reminders = state.reminders.filter((x) => x.id !== r.id); save(); renderReminderList(); renderReminderBadge();
         } }, '🗑️'))
     )));
@@ -453,9 +689,13 @@
     if (!text) return err('Please write a short message.');
     if (!/^\d{2}:\d{2}$/.test(time)) return err('Please choose a time.');
     if (type === 'weekly' && !days.length) return err('Choose at least one day.');
-    if (type === 'date' && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return err('Please pick a date.');
+    if (type === 'date' && !isDateKey(date)) return err('Please pick a date.');
+    const now = new Date(), tK = toKey(now), nowHM = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    if (type === 'date' && (date < tK || (date === tK && time <= nowHM))) return err('That date and time has already passed. Pick a future time.');
     err('');
-    state.reminders.push({ id: uid(), text, type, days: type === 'weekly' ? days : [], date: type === 'date' ? date : null, time, enabled: true, lastFired: null });
+    // If today's time has already passed, start from the next occurrence instead of firing right away.
+    const passedToday = type === 'weekly' && days.includes(now.getDay()) && time <= nowHM;
+    state.reminders.push({ id: uid(), text, type, days: type === 'weekly' ? days : [], date: type === 'date' ? date : null, time, enabled: true, lastFired: passedToday ? tK : null });
     save();
     $('remText').value = '';
     $('remWeekly').querySelectorAll('input').forEach((i) => { i.checked = false; });
@@ -469,18 +709,27 @@
     return r.type === 'date' ? r.date === toKey(d) : r.days.includes(d.getDay());
   }
   let reminderTimer = null;
+  let lastSeenDay = todayKey();
+  const LATE_LIMIT_MIN = 120; // a reminder missed by more than 2 hours is skipped instead of popping up late
   function checkReminders() {
     if (!state.user) return;
     const now = new Date(), tK = toKey(now);
+    // The day changed while the page was open: refresh "today" highlights and the banner.
+    if (tK !== lastSeenDay) { lastSeenDay = tK; render(); renderReminderBadge(); }
     const hhmm = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    const nowMin = now.getHours() * 60 + now.getMinutes();
     let changed = false;
     for (const r of state.reminders) {
       if (!r.enabled || r.lastFired === tK || !occursOn(r, now) || hhmm < r.time) continue;
+      const [h, m] = r.time.split(':').map(Number);
       r.lastFired = tK;
       changed = true;
-      fireReminder(r);
+      if (nowMin - (h * 60 + m) <= LATE_LIMIT_MIN) fireReminder(r);
     }
-    if (changed) { save(); renderReminderBadge(); }
+    if (changed) {
+      save(); renderReminderBadge();
+      if (reminderDialog.open) renderReminderList();
+    }
   }
   async function fireReminder(r) {
     toast(`🔔 ${r.text}`, 10000);
@@ -502,7 +751,7 @@
     reminderTimer = setInterval(checkReminders, 20000);
   }
   function stopReminderLoop() { if (reminderTimer) clearInterval(reminderTimer); reminderTimer = null; }
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { checkReminders(); renderReminderBadge(); } });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && state.user) { checkReminders(); renderReminderBadge(); } });
 
   function exportIcs(r) {
     const [h, m] = r.time.split(':').map(Number);
@@ -531,12 +780,19 @@
       'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${esc(r.text)}`, 'TRIGGER:PT0M', 'END:VALARM',
       'END:VEVENT', 'END:VCALENDAR',
     ].filter(Boolean);
-    download(`reminder-${r.text.slice(0, 24).replace(/[^\w-]+/g, '-').toLowerCase() || 'tracker'}.ics`, lines.join('\r\n'), 'text/calendar');
-    toast('📅 Calendar file downloaded. Open it to add the reminder.');
+    openFileDialog({
+      mode: 'export',
+      title: 'Add to calendar',
+      help: 'Download this .ics file and open it to add the reminder to Google Calendar, Apple Calendar or Outlook. Your calendar will then remind you even when this page is closed.',
+      name: `reminder-${r.text.slice(0, 24).replace(/[^\w-]+/g, '-').toLowerCase() || 'tracker'}.ics`,
+      content: lines.join('\r\n'),
+      type: 'text/calendar',
+    });
   }
 
   // ================= Boot =================
   syncThemeIcon();
-  const session = store.get(SESSION_KEY, null);
-  if (session && session.email) { state.user = session; showApp(); } else { showLogin(); }
+  setAuthMode('signin');
+  const session = readSession();
+  if (session) { state.user = session; showApp(); } else { showLogin(); }
 })();

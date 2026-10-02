@@ -8,7 +8,7 @@ A personal tracker for logging daily work across four sections: **Study**, **AI 
 **How to use:** open `tracker/index.html` in any browser. Nothing to install and no server needed. To use it on your phone, host the folder with GitHub Pages (Settings → Pages → deploy from this branch) and open the link.
 
 ### Features
-- **Email login.** Each email keeps its own data on this device.
+- **Email + password login.** Create an account, then sign in. Passwords are salted and hashed (PBKDF2), never stored as plain text. You can show/hide the password, change it from the ⋯ menu, and choose “Keep me signed in”.
 - **Four colour-coded sections**, each with a table of Date · Day · Hours · What I learned / did.
 - **Date picker.** The Day fills in automatically.
 - **Weekly view (Mon–Sun):** hours per section and the weekly grand total.
@@ -19,4 +19,4 @@ A personal tracker for logging daily work across four sections: **Study**, **AI 
 - **Dark mode.** It follows your system setting, and the 🌙/☀️ button switches it manually.
 - **Responsive layout** for phone and laptop.
 
-> Note: there is no server, so the login only keeps each email's data separate on this device. It is not a password-protected account. Data stays in your browser. Use Export to back it up or move it to another device.
+> Note: there is no server, so accounts exist only in this browser on this device. The password stops other people using the app on a shared device, but the saved entries themselves are not encrypted. A forgotten password cannot be recovered; “Forgot password?” resets the account and erases its data on this device. Use Export to back up or move your data.
