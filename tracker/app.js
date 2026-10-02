@@ -16,19 +16,119 @@
   const THEME_KEY = 'wmt.theme';
 
   // ================= Storage =================
-  const store = {
+  // Device-only settings (signed-in session, theme) always stay in this browser.
+  const local = {
+    ok: (() => { try { localStorage.setItem('wmt.probe', '1'); localStorage.removeItem('wmt.probe'); return true; } catch (e) { return false; } })(),
     get(key, fallback) {
-      try {
-        const raw = localStorage.getItem(key);
-        return raw == null ? fallback : JSON.parse(raw);
-      } catch (e) { return fallback; }
+      try { const raw = localStorage.getItem(key); return raw == null ? fallback : JSON.parse(raw); } catch (e) { return fallback; }
     },
-    set(key, value) {
-      try { localStorage.setItem(key, JSON.stringify(value)); return true; }
-      catch (e) { toast('⚠️ Could not save. Browser storage may be full or blocked.'); return false; }
-    },
+    set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (e) { return false; } },
     remove(key) { try { localStorage.removeItem(key); } catch (e) {} },
   };
+
+  // Account data (accounts, entries, reminders). Kept in memory and saved to:
+  //  - 'cloud':  the viewer's private storage in their Claude account, when opened as a Claude artifact
+  //              (also mirrored to this browser as a backup when possible)
+  //  - 'local':  this browser's localStorage (local file, GitHub Pages, any normal website)
+  //  - 'memory': nowhere; the page can't save in this view, so we warn the user
+  const DEVICE_KEYS = new Set([SESSION_KEY, THEME_KEY]);
+  const DELETE = Symbol('delete');
+  const store = {
+    mode: 'memory',
+    mem: new Map(),
+    db: null,
+    uid: null,
+    queues: new Map(),
+    warned: false,
+    get(key, fallback) {
+      // Return a copy so callers can't mutate the cache by accident.
+      return this.mem.has(key) ? JSON.parse(JSON.stringify(this.mem.get(key))) : fallback;
+    },
+    keys(prefix) { return [...this.mem.keys()].filter((k) => k.startsWith(prefix)); },
+    // Resolves true once saved (or false if it could not be saved).
+    set(key, value) { this.mem.set(key, value); return this.persist(key, value); },
+    remove(key) { this.mem.delete(key); return this.persist(key, DELETE); },
+    async persist(key, value) {
+      let ok = false;
+      if (local.ok) ok = value === DELETE ? (local.remove(key), true) : local.set(key, value);
+      if (this.mode === 'cloud') ok = await this.cloudWrite(key, value);
+      if (this.mode === 'memory') ok = false;
+      if (!ok && !this.warned) {
+        this.warned = true;
+        toast(this.mode === 'memory'
+          ? '⚠️ This view cannot save. Your changes will be lost when you close the page.'
+          : '⚠️ Could not save your latest change. Check your connection; it will be kept while this page stays open.', 6000);
+      }
+      if (ok) this.warned = false;
+      return ok;
+    },
+    // One write at a time per document; a burst of changes collapses into the latest value.
+    cloudWrite(key, value) {
+      return new Promise((resolve) => {
+        let q = this.queues.get(key);
+        if (!q) { q = { busy: false, has: false, next: null, waiters: [] }; this.queues.set(key, q); }
+        q.next = value; q.has = true; q.waiters.push(resolve);
+        if (!q.busy) this.pump(key, q);
+      });
+    },
+    async pump(key, q) {
+      q.busy = true;
+      while (q.has) {
+        const value = q.next, waiters = q.waiters;
+        q.has = false; q.waiters = [];
+        const write = () => {
+          const ref = this.db.doc(`data/users/${this.uid}/${encKey(key)}`);
+          return value === DELETE ? ref.delete() : ref.set({ v: value });
+        };
+        let ok = true;
+        try { await write(); } catch (e) {
+          if (e && e.code === 'unavailable') {
+            await new Promise((r) => setTimeout(r, 400 + Math.random() * 800));
+            try { await write(); } catch (e2) { ok = false; }
+          } else ok = false;
+        }
+        waiters.forEach((r) => r(ok));
+      }
+      q.busy = false;
+    },
+  };
+  // Document ids allow only letters, digits and _ - . : @ + ; everything else (and ~ itself) becomes ~XX.
+  const encKey = (k) => k.replace(/[^A-Za-z0-9_\-.:@+]/g, (c) => [...new TextEncoder().encode(c)].map((b) => '~' + b.toString(16).padStart(2, '0')).join(''));
+  const decKey = (k) => { try { return decodeURIComponent(k.replace(/~([0-9a-f]{2})/g, '%$1')); } catch (e) { return k; } };
+
+  async function initStorage() {
+    // Everything this browser already has (also used to carry old data over to cloud storage).
+    const localData = new Map();
+    if (local.ok) {
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith('wmt.') && !DEVICE_KEYS.has(k) && k !== 'wmt.probe') {
+            const v = local.get(k, undefined);
+            if (v !== undefined) localData.set(k, v);
+          }
+        }
+      } catch (e) {}
+    }
+    // Inside the Claude artifact viewer: use the viewer's private, account-backed storage.
+    if (window.claude && typeof window.claude.use === 'function') {
+      try {
+        const [db, user] = await Promise.all([window.claude.use('db'), window.claude.use('user')]);
+        const id = user ? await user.id() : null;
+        if (db && id) {
+          const snap = await db.collection(`data/users/${id}`).limit(1000).get();
+          store.db = db; store.uid = id; store.mode = 'cloud';
+          for (const d of snap.docs) { const body = d.data(); if (body && 'v' in body) store.mem.set(decKey(d.id), body.v); }
+          // First use of cloud storage: bring over what this browser had (e.g. an account made before this update).
+          if (store.mem.size === 0) for (const [k, v] of localData) { store.mem.set(k, v); store.cloudWrite(k, v); }
+        }
+      } catch (e) { store.mode = 'memory'; store.db = null; }
+    }
+    if (store.mode !== 'cloud') {
+      store.mode = local.ok ? 'local' : 'memory';
+      for (const [k, v] of localData) store.mem.set(k, v);
+    }
+  }
 
   // ================= Date helpers (local time, no UTC shifts) =================
   const pad = (n) => String(n).padStart(2, '0');
@@ -52,15 +152,47 @@
     view: 'week',
     anchor: new Date(),
   };
+  // Entries are saved one record per month (wmt.entries.<email>.<YYYY-MM>) so no record grows too large.
   const dataKey = () => `wmt.data.${state.user.email}`;
+  const entriesPrefix = (email) => `wmt.entries.${email}.`;
+  let savedMonths = new Map(); // month -> JSON last saved
+  let savedData = '';
   function load() {
     const d = store.get(dataKey(), {});
-    state.entries = Array.isArray(d.entries) ? d.entries : [];
+    const byId = new Map();
+    for (const k of store.keys(entriesPrefix(state.user.email))) {
+      const list = store.get(k, []);
+      if (Array.isArray(list)) for (const e of list) if (e && e.id) byId.set(e.id, e);
+    }
+    // Older versions kept every entry inside the data record.
+    const legacy = Array.isArray(d.entries) ? d.entries : [];
+    for (const e of legacy) if (e && e.id && !byId.has(e.id)) byId.set(e.id, e);
+    state.entries = [...byId.values()].filter((e) => SECTIONS.some((s) => s.id === e.section) && /^\d{4}-\d{2}-\d{2}$/.test(e.date));
     state.reminders = Array.isArray(d.reminders) ? d.reminders.map(cleanReminder).filter(Boolean) : [];
     state.view = d.view === 'month' ? 'month' : 'week';
+    savedMonths = new Map();
+    for (const k of store.keys(entriesPrefix(state.user.email))) savedMonths.set(k.slice(-7), JSON.stringify(store.get(k, [])));
+    savedData = legacy.length ? '' : JSON.stringify({ reminders: d.reminders || [], view: d.view || 'week' });
+    if (legacy.length) save(); // move old entries into monthly records
   }
   function save() {
-    store.set(dataKey(), { entries: state.entries, reminders: state.reminders, view: state.view });
+    const email = state.user.email;
+    const groups = new Map();
+    for (const e of state.entries) {
+      const m = e.date.slice(0, 7);
+      if (!groups.has(m)) groups.set(m, []);
+      groups.get(m).push(e);
+    }
+    for (const m of new Set([...groups.keys(), ...savedMonths.keys()])) {
+      const list = groups.get(m) || [];
+      const json = JSON.stringify(list);
+      if (json === (savedMonths.get(m) || '[]') && savedMonths.has(m) === list.length > 0) continue;
+      if (list.length) { store.set(entriesPrefix(email) + m, list); savedMonths.set(m, json); }
+      else { store.remove(entriesPrefix(email) + m); savedMonths.delete(m); }
+    }
+    const data = { reminders: state.reminders, view: state.view };
+    const json = JSON.stringify(data);
+    if (json !== savedData) { store.set(dataKey(), data); savedData = json; }
   }
 
   // ================= DOM =================
@@ -124,15 +256,15 @@
 
   // Session: localStorage when "keep me signed in", otherwise only for this tab.
   function readSession() {
-    let s = store.get(SESSION_KEY, null);
+    let s = local.get(SESSION_KEY, null);
     if (!s) { try { s = JSON.parse(sessionStorage.getItem(SESSION_KEY) || 'null'); } catch (e) { s = null; } }
     // Ignore sessions from before passwords existed, or for deleted accounts.
     return s && s.email && store.get(accountKey(s.email), null) ? s : null;
   }
   function writeSession(user, remember) {
-    store.remove(SESSION_KEY);
+    local.remove(SESSION_KEY);
     try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
-    if (remember) store.set(SESSION_KEY, user);
+    if (remember) local.set(SESSION_KEY, user);
     else { try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(user)); } catch (e) {} }
   }
 
@@ -178,12 +310,13 @@
         if (account) return err('An account with this email already exists. Sign in instead.');
         if (password !== $('loginConfirm').value) return err('The two passwords do not match.');
         const name = $('loginName').value.trim() || store.get(`wmt.profile.${email}`, {}).name || '';
-        if (!store.set(accountKey(email), { name, ...(await makeCredential(password)), createdAt: Date.now() })) return;
+        const saved = await store.set(accountKey(email), { name, ...(await makeCredential(password)), createdAt: Date.now() });
+        if (!saved && store.mode !== 'memory') { store.mem.delete(accountKey(email)); return err('Could not save your account. Check your internet connection and try again.'); }
         state.user = { email, name };
       } else {
         if (!account) {
           // Data saved before passwords existed: ask the user to set one.
-          const legacy = store.get(`wmt.data.${email}`, null);
+          const legacy = store.get(`wmt.data.${email}`, null) || store.keys(entriesPrefix(email)).length > 0;
           return err(legacy ? 'This email has saved entries but no password yet. Choose “Create account” to set one; your entries are kept.' : 'No account found for this email. Choose “Create account”.');
         }
         if (!(await checkPassword(account, password))) {
@@ -221,6 +354,7 @@
     store.remove(accountKey(email));
     store.remove(`wmt.data.${email}`);
     store.remove(`wmt.profile.${email}`);
+    for (const k of store.keys(entriesPrefix(email))) store.remove(k);
     setAuthMode('signup');
     $('loginError').textContent = '';
     toast('Account reset. Create a new password to start again.');
@@ -228,7 +362,7 @@
 
   $('logoutBtn').addEventListener('click', () => {
     closeMenu();
-    store.remove(SESSION_KEY);
+    local.remove(SESSION_KEY);
     try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
     stopReminderLoop();
     state.user = null;
@@ -257,7 +391,10 @@
     if (nw !== $('pwNew2').value) return err('The new passwords do not match.');
     try {
       if (!(await checkPassword(account, cur))) return err('Current password is wrong.');
-      if (!store.set(accountKey(state.user.email), { ...account, ...(await makeCredential(nw)) })) return;
+      if (!(await store.set(accountKey(state.user.email), { ...account, ...(await makeCredential(nw)) })) && store.mode !== 'memory') {
+        store.mem.set(accountKey(state.user.email), account);
+        return err('Could not save the new password. Check your internet connection and try again.');
+      }
     } catch (ex) { return err('Could not change the password. Please try again.'); }
     pwDialog.close();
     toast('🔑 Password changed');
@@ -793,6 +930,20 @@
   // ================= Boot =================
   syncThemeIcon();
   setAuthMode('signin');
-  const session = readSession();
-  if (session) { state.user = session; showApp(); } else { showLogin(); }
+  showLogin();
+  $('loginSubmit').disabled = true;
+  $('loginSubmit').textContent = 'Loading…';
+  initStorage().then(() => {
+    $('loginSubmit').disabled = false;
+    setAuthMode(authMode);
+    const note = $('storageNote');
+    note.textContent = {
+      cloud: 'Your account and entries are saved privately to your Claude account, so they are there on any device where you open this link.',
+      local: 'Your account and entries are saved in this browser on this device.',
+      memory: '⚠️ This view cannot save anything. You can still sign in, but your account and entries will be lost when you close the page. Open the link in a normal browser tab to keep your data.',
+    }[store.mode];
+    note.classList.toggle('error', store.mode === 'memory');
+    const session = readSession();
+    if (session) { state.user = session; showApp(); }
+  });
 })();
