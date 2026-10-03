@@ -68,6 +68,7 @@
         </div>
       </div>
       <div class="top-actions">
+        <button class="icon-btn ai-btn" id="aiBtn" title="W&amp;MT AI" aria-label="Open W&amp;MT AI" hidden>✨</button>
         <button class="icon-btn" id="reminderBtn" title="Reminders" aria-label="Reminders">🔔<span class="badge" id="reminderCount" hidden></span></button>
         <button class="icon-btn" id="themeBtn" title="Toggle dark mode" aria-label="Toggle dark mode">🌙</button>
         <button class="icon-btn" id="menuBtn" title="More" aria-label="More options" aria-haspopup="true" aria-expanded="false">⋯</button>
@@ -235,6 +236,51 @@
       <button type="button" class="btn ghost" id="fileChoose" hidden>Choose file…</button>
       <button type="button" class="btn primary" id="fileImport" hidden>Import</button>
     </div>
+  </dialog>
+
+  <!-- ============ AI DIALOG ============ -->
+  <dialog id="aiDialog" class="dialog ai-dialog">
+    <div class="dialog-head">
+      <h2>✨ W&amp;MT AI</h2>
+      <button type="button" class="icon-btn" id="aiClose" aria-label="Close">✕</button>
+    </div>
+    <div class="seg-tabs" role="tablist" aria-label="AI mode">
+      <button type="button" role="tab" id="aiTabAsk" aria-selected="true">Ask</button>
+      <button type="button" role="tab" id="aiTabLog" aria-selected="false">Log by typing</button>
+    </div>
+
+    <div id="aiAskPane">
+      <div class="chips ai-chips" id="aiChips"></div>
+      <div class="ai-log" id="aiLog" aria-live="polite"></div>
+      <form id="aiForm" class="ai-form">
+        <label for="aiInput" class="sr-only">Ask about your progress</label>
+        <textarea id="aiInput" rows="2" maxlength="1000" placeholder="Ask anything about your progress, e.g. “How many hours did I study this month?”"></textarea>
+        <div class="ai-actions">
+          <button type="button" class="btn ghost small" id="aiClear">Clear chat</button>
+          <span class="spacer"></span>
+          <button type="button" class="btn ghost small" id="aiStop" hidden>Stop</button>
+          <button type="submit" class="btn primary" id="aiSend">Send</button>
+        </div>
+      </form>
+    </div>
+
+    <div id="aiLogPane" hidden>
+      <form id="aiParseForm">
+        <label for="aiParseInput">Describe what you did</label>
+        <textarea id="aiParseInput" rows="3" maxlength="1000" placeholder="e.g. Studied dynamic programming for 2 hours, watched an AI agents course 1.5h, edited a reel for 45 min yesterday"></textarea>
+        <div class="ai-actions">
+          <span class="spacer"></span>
+          <button type="submit" class="btn primary" id="aiParseBtn">Turn into entries</button>
+        </div>
+      </form>
+      <p class="muted ai-status" id="aiParseStatus"></p>
+      <ul class="ai-preview" id="aiPreview"></ul>
+      <div class="ai-actions" id="aiPreviewActions" hidden>
+        <span class="spacer"></span>
+        <button type="button" class="btn primary" id="aiAddAll">Add all</button>
+      </div>
+    </div>
+    <p class="fineprint">Uses Claude on your own Claude account. It only sees your tracker entries when you ask, and can make mistakes, so check the numbers.</p>
   </dialog>
 
   <div class="toasts" id="toasts" aria-live="polite"></div>

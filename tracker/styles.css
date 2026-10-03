@@ -493,3 +493,44 @@ button.stat:not(.total):hover { border-color: var(--c); }
 .save-status.bad { color: var(--danger); cursor: pointer; text-decoration: underline; }
 .save-status:disabled { opacity: 1; }
 .empty-hint { margin: 0 0 16px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* ============ W&MT AI ============ */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.ai-btn { background: var(--ai-soft); border-color: var(--ai); }
+.ai-dialog { width: min(640px, calc(100vw - 32px)); --c: var(--ai); --c-soft: var(--ai-soft); }
+.seg-tabs { display: flex; padding: 4px; margin: .5rem 0 .75rem; background: var(--surface-2); border-radius: 12px; }
+.seg-tabs button { flex: 1; font: inherit; font-weight: 600; border: 0; border-radius: 9px; padding: .45rem .8rem; background: none; color: var(--muted); cursor: pointer; }
+.seg-tabs button[aria-selected="true"] { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.ai-chips { margin-bottom: .75rem; }
+.ai-chip:hover:not(:disabled) { border-color: var(--ai); }
+.ai-chip:disabled { opacity: .5; cursor: default; }
+.ai-log {
+  display: grid; gap: 10px; align-content: start;
+  min-height: 160px; max-height: min(46vh, 420px); overflow-y: auto;
+  padding: .75rem; border: 1px solid var(--border); border-radius: 12px; background: var(--bg);
+}
+.bubble { max-width: 88%; padding: .6rem .85rem; border-radius: 14px; font-size: .92rem; line-height: 1.5; overflow-wrap: anywhere; }
+.bubble.user { justify-self: end; background: var(--primary); color: var(--primary-text); border-bottom-right-radius: 4px; white-space: pre-wrap; }
+.bubble.ai { justify-self: start; background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--ai); border-bottom-left-radius: 4px; }
+.bubble.ai p { margin: 0 0 .45rem; }
+.bubble.ai p:last-child { margin-bottom: 0; }
+.bubble.ai ul, .bubble.ai ol { margin: .2rem 0 .45rem; padding-left: 1.2rem; }
+.bubble.ai li { margin: .15rem 0; }
+.bubble.thinking { color: var(--muted); font-style: italic; }
+.ai-err { color: var(--danger); font-size: .85rem; }
+.ai-empty { text-align: center; padding: 1.5rem .5rem; }
+.ai-empty p { margin: .2rem 0; }
+.ai-form textarea, #aiParseForm textarea { margin-top: .6rem; }
+.ai-actions { display: flex; gap: 8px; align-items: center; margin-top: .5rem; flex-wrap: wrap; }
+.ai-status { min-height: 1.2em; font-size: .88rem; margin: .5rem 0; }
+.ai-preview { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.draft { display: flex; gap: 10px; align-items: center; padding: .65rem .8rem; border: 1px solid var(--border); border-left: 4px solid var(--c); border-radius: 12px; }
+.draft.added { opacity: .6; }
+.d-main { flex: 1; min-width: 0; }
+.d-top { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; }
+.d-sec { font-weight: 700; color: var(--c); }
+.d-hrs { font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.d-date { font-size: .8rem; color: var(--muted); }
+.d-notes { font-size: .88rem; overflow-wrap: anywhere; }
+.d-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.d-done { font-size: .85rem; font-weight: 700; color: var(--c); white-space: nowrap; }

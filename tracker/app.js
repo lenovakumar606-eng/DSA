@@ -870,8 +870,10 @@
     const v = $('entryDate').value;
     $('entryDay').value = /^\d{4}-\d{2}-\d{2}$/.test(v) ? dayName(v) : '';
   }
-  function openEntry(sectionId, entry, presetDate) {
+  let entrySavedHook = null; // set by AI "Edit" so its preview can mark the item as added
+  function openEntry(sectionId, entry, presetDate, prefill) {
     editingId = entry ? entry.id : null;
+    if (!prefill) entrySavedHook = null;
     $('entryTitle').textContent = entry ? 'Edit entry' : 'Add entry';
     $('entrySection').value = sectionId || SECTIONS[0].id;
     // New entries default to today, or to the period's first day if today is outside the shown period.
@@ -881,8 +883,8 @@
       if (defDate < toKey(p.start) || defDate > toKey(p.end)) defDate = toKey(p.start);
     }
     $('entryDate').value = entry ? entry.date : (presetDate || defDate);
-    $('entryHours').value = entry ? entry.hours : '';
-    $('entryNotes').value = entry ? entry.notes : '';
+    $('entryHours').value = entry ? entry.hours : (prefill ? prefill.hours : '');
+    $('entryNotes').value = entry ? entry.notes : (prefill ? prefill.notes : '');
     $('entryDelete').hidden = !entry;
     $('entryError').textContent = '';
     syncDay();
@@ -920,7 +922,9 @@
     state.anchor = fromKey(date);
     render();
     toast(editingId ? '✅ Entry updated' : '✅ Entry added');
+    if (entrySavedHook) { const h = entrySavedHook; entrySavedHook = null; h(); }
   });
+  entryDialog.addEventListener('close', () => { setTimeout(() => { entrySavedHook = null; }, 0); });
   async function deleteEntry(id) {
     const e = state.entries.find((x) => x.id === id);
     if (!e) return false;
@@ -1123,6 +1127,250 @@
       content: lines.join('\r\n'),
       type: 'text/calendar',
     });
+  }
+
+  // ================= W&MT AI (Claude, on the viewer's own account) =================
+  let sampleFn = null;
+  let aiCtl = null;
+  let aiTurns = []; // chat history kept by the page: {role, content}
+  const aiDialog = $('aiDialog');
+  const AI_CHIPS = [
+    ['📊 Summarize', () => `Summarize my ${state.view === 'week' ? 'week' : 'month'} (${$('periodLabel').textContent}): hours per section, what I worked on, and one thing I did well.`],
+    ['🗓️ Plan tomorrow', () => 'Suggest a realistic plan for tomorrow across my 4 sections, based on my recent hours and notes. Give hours per section and one concrete task each.'],
+    ['🎯 Where to focus?', () => 'Which section am I neglecting lately, and what small habit would fix it? Look at the last 4 weeks.'],
+    ['💡 Content ideas', () => 'Give me 5 Instagram / content post ideas based on what I studied and learned recently (use my notes).'],
+    ['🔥 Streak', () => 'What is my current streak of consecutive active days (any section), my longest streak in this data, and my most productive weekday?'],
+  ];
+
+  function aiData() {
+    const tK = todayKey(), p = period();
+    const startK = toKey(p.start), endK = toKey(p.end);
+    const inP = state.entries.filter((e) => e.date >= startK && e.date <= endK);
+    const lines = [];
+    lines.push(`Today: ${dayName(tK)} ${tK}.`);
+    if (state.user.name) lines.push(`User's name: ${state.user.name}.`);
+    lines.push('Sections: Study, AI Learning, Content Creation, Instagram.');
+    lines.push(`Screen shows: ${state.view === 'week' ? 'week' : 'month'} ${p.label} (${startK} to ${endK})${state.focus ? `, section ${SECTIONS.find((s) => s.id === state.focus).name} full screen` : ''}.`);
+    lines.push(`Totals for that period: ${SECTIONS.map((s) => `${s.name} ${fmtHours(inP.filter((e) => e.section === s.id).reduce((a, e) => a + Number(e.hours), 0))}h`).join(', ')}.`);
+    const since = toKey(addDays(new Date(), -120));
+    const recent = state.entries.filter((e) => e.date >= since).sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 400);
+    lines.push(`Entries from the last 120 days (${recent.length}, newest first; date | day | section | hours | notes):`);
+    for (const e of recent) {
+      lines.push(`${e.date} | ${dayName(e.date).slice(0, 3)} | ${SECTIONS.find((s) => s.id === e.section).name} | ${fmtHours(e.hours)}h | ${String(e.notes || '').replace(/\s+/g, ' ').slice(0, 200)}`);
+    }
+    if (!recent.length) lines.push('(no entries yet)');
+    const older = state.entries.length - recent.length;
+    if (older > 0) lines.push(`(${older} older entries not shown.)`);
+    return lines.join('\n');
+  }
+  const aiRules = () => 'You are the friendly productivity coach inside W&MT, a weekly & monthly tracker where the user logs daily hours in four sections. '
+    + 'Answer the user\'s questions using ONLY the tracker data below. If the data can\'t answer it, say so briefly; never invent entries or numbers. '
+    + 'Do arithmetic carefully. Be concise and encouraging: at most ~150 words, short paragraphs or up to 6 bullet points, simple Markdown (**bold**, "- " bullets), no tables, no headings larger than ###.\n\n'
+    + `TRACKER DATA\n${aiData()}`;
+
+  // Tiny safe Markdown renderer: paragraphs, "- " bullets, numbered lists, ### headings, **bold**. No HTML is ever injected.
+  function mdInto(container, text) {
+    const inline = (str) => {
+      const out = [];
+      str.split(/(\*\*[^*]+\*\*)/g).forEach((part) => {
+        if (/^\*\*[^*]+\*\*$/.test(part)) out.push(el('strong', { text: part.slice(2, -2) }));
+        else if (part) out.push(part);
+      });
+      return out;
+    };
+    const nodes = [];
+    let list = null;
+    for (const raw of text.split('\n')) {
+      const line = raw.trimEnd();
+      const bullet = line.match(/^\s*[-*•]\s+(.*)$/), num = line.match(/^\s*\d+[.)]\s+(.*)$/), head = line.match(/^#{1,4}\s+(.*)$/);
+      if (bullet || num) {
+        const tag = bullet ? 'ul' : 'ol';
+        if (!list || list.tagName.toLowerCase() !== tag) { list = el(tag); nodes.push(list); }
+        list.append(el('li', null, inline((bullet || num)[1])));
+        continue;
+      }
+      list = null;
+      if (!line.trim()) continue;
+      nodes.push(head ? el('p', { class: 'md-h' }, el('strong', null, inline(head[1]))) : el('p', null, inline(line)));
+    }
+    container.replaceChildren(...nodes);
+  }
+  const aiErrorText = (code) => ({
+    not_granted: 'AI is turned off for this page. You can allow it from the page’s permissions.',
+    sampling_disabled: 'AI is not available for your Claude account.',
+    not_declared: 'AI is not available on this version of the page. Refresh and try again.',
+    capability_disabled: 'AI is not available in this view.',
+    capability_removed: 'AI is not available in this view.',
+    rate_limited: 'Too many AI requests right now (or your usage limit was reached). Please try again in a little while.',
+    session_expired: 'Your Claude session expired. Sign in to Claude again, then retry.',
+    refused: 'The AI could not answer that. Try asking in a different way.',
+    empty_completion: 'The AI returned an empty answer. Try asking for something smaller.',
+    prompt_too_large: 'Too much data to send at once. Try a narrower question.',
+    invalid_json: 'The AI reply could not be read as entries. Try rewording your description.',
+  }[code] || 'Something went wrong talking to the AI. Please try again.');
+  const AI_FATAL = new Set(['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed']);
+
+  function aiBubble(role, text) {
+    const b = el('div', { class: `bubble ${role}` });
+    if (role === 'user') b.textContent = text; else if (text) mdInto(b, text);
+    $('aiLog').append(b);
+    $('aiLog').scrollTop = $('aiLog').scrollHeight;
+    return b;
+  }
+  function aiEmptyState() {
+    if ($('aiLog').children.length) return;
+    $('aiLog').append(el('div', { class: 'ai-empty' },
+      el('p', null, el('strong', { text: 'Ask me about your progress.' })),
+      el('p', { class: 'muted', text: 'Tap a button above or type a question. I read your saved entries to answer.' })));
+  }
+  function aiBusy(on) {
+    $('aiSend').disabled = on; $('aiStop').hidden = !on;
+    $('aiChips').querySelectorAll('button').forEach((b) => { b.disabled = on; });
+  }
+  async function aiAsk(question) {
+    if (!sampleFn || !question.trim() || aiCtl) return;
+    const empty = $('aiLog').querySelector('.ai-empty');
+    if (empty) empty.remove();
+    aiBubble('user', question);
+    aiTurns.push({ role: 'user', content: question });
+    if (aiTurns.length > 12) aiTurns = aiTurns.slice(-12);
+    while (aiTurns.length && aiTurns[0].role !== 'user') aiTurns.shift();
+    const bubble = aiBubble('ai', '');
+    bubble.classList.add('thinking'); bubble.textContent = 'Thinking…';
+    aiBusy(true);
+    aiCtl = new AbortController();
+    try {
+      const { text, truncated } = await sampleFn([{ role: 'user', content: aiRules() }, ...aiTurns], {
+        cache: false,
+        signal: aiCtl.signal,
+        onText: ({ text: t }) => { bubble.classList.remove('thinking'); mdInto(bubble, t); $('aiLog').scrollTop = $('aiLog').scrollHeight; },
+      });
+      bubble.classList.remove('thinking');
+      mdInto(bubble, text + (truncated ? '\n\n(Answer was cut short. Ask for less at a time.)' : ''));
+      aiTurns.push({ role: 'assistant', content: text });
+    } catch (e) {
+      bubble.classList.remove('thinking');
+      const code = e && e.code;
+      aiTurns.pop();
+      if (code === 'cancelled') {
+        if (e.text) mdInto(bubble, e.text + '\n\n(Stopped.)'); else bubble.remove();
+      } else {
+        if (e && e.text && code !== 'refused') mdInto(bubble, e.text); else bubble.replaceChildren();
+        bubble.append(el('p', { class: 'ai-err', text: aiErrorText(code) }));
+        if (AI_FATAL.has(code)) disableAi();
+      }
+    } finally {
+      aiCtl = null;
+      aiBusy(false);
+    }
+  }
+  let aiDisabled = false;
+  function disableAi() {
+    aiDisabled = true;
+    $('aiSend').disabled = true; $('aiParseBtn').disabled = true;
+    $('aiChips').querySelectorAll('button').forEach((b) => { b.disabled = true; });
+  }
+
+  $('aiChips').replaceChildren(...AI_CHIPS.map(([label, q]) => el('button', { type: 'button', class: 'chip ai-chip', onclick: () => aiAsk(q()) }, label)));
+  $('aiForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const q = $('aiInput').value.trim();
+    if (!q || aiCtl || aiDisabled) return;
+    $('aiInput').value = '';
+    aiAsk(q);
+  });
+  $('aiInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('aiForm').requestSubmit(); } });
+  $('aiStop').addEventListener('click', () => { if (aiCtl) aiCtl.abort(); });
+  $('aiClear').addEventListener('click', () => { if (aiCtl) aiCtl.abort(); aiTurns = []; $('aiLog').replaceChildren(); aiEmptyState(); });
+  $('aiClose').addEventListener('click', () => aiDialog.close());
+  let aiTab = 'ask';
+  function setAiTab(t) {
+    aiTab = t;
+    $('aiTabAsk').setAttribute('aria-selected', String(t === 'ask'));
+    $('aiTabLog').setAttribute('aria-selected', String(t === 'log'));
+    $('aiAskPane').hidden = t !== 'ask';
+    $('aiLogPane').hidden = t !== 'log';
+    (t === 'ask' ? $('aiInput') : $('aiParseInput')).focus();
+  }
+  $('aiTabAsk').addEventListener('click', () => setAiTab('ask'));
+  $('aiTabLog').addEventListener('click', () => setAiTab('log'));
+  $('aiBtn').addEventListener('click', () => { aiEmptyState(); aiDialog.showModal(); setAiTab(aiTab); });
+
+  // ---- Log by typing: free text -> entries the user reviews before saving ----
+  let aiDrafts = [];
+  const pushEntry = (d) => {
+    state.entries.push({ id: uid(), section: d.section, date: d.date, hours: d.hours, notes: d.notes, updatedAt: Date.now() });
+    d.added = true;
+  };
+  function renderDrafts() {
+    $('aiPreview').replaceChildren(...aiDrafts.map((d) => {
+      const s = SECTIONS.find((x) => x.id === d.section);
+      return el('li', { class: `draft ${d.section}${d.added ? ' added' : ''}` },
+        el('div', { class: 'd-main' },
+          el('div', { class: 'd-top' }, el('span', { class: 'd-sec', text: `${s.icon} ${s.name}` }), el('span', { class: 'd-hrs', text: `${fmtHours(d.hours)} h` })),
+          el('div', { class: 'd-date', text: `${dayName(d.date)}, ${fmtDate(d.date)}` }),
+          el('div', { class: 'd-notes', text: d.notes || '—' })),
+        d.added ? el('span', { class: 'd-done', text: '✓ Added' }) : el('div', { class: 'd-actions' },
+          el('button', { type: 'button', class: 'btn ghost small', onclick: () => {
+            openEntry(d.section, null, d.date, { hours: d.hours, notes: d.notes });
+            entrySavedHook = () => { d.added = true; renderDrafts(); };
+          } }, 'Edit'),
+          el('button', { type: 'button', class: 'btn primary small', onclick: () => { pushEntry(d); save(); render(); renderDrafts(); toast('✅ Entry added'); } }, 'Add')));
+    }));
+    const left = aiDrafts.filter((d) => !d.added).length;
+    $('aiPreviewActions').hidden = left < 2;
+    $('aiAddAll').textContent = `Add all ${left}`;
+  }
+  $('aiAddAll').addEventListener('click', () => {
+    const left = aiDrafts.filter((d) => !d.added);
+    left.forEach(pushEntry);
+    save(); render(); renderDrafts();
+    toast(`✅ Added ${left.length} entries`);
+  });
+  $('aiParseForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = $('aiParseInput').value.trim();
+    if (!sampleFn || !text || aiCtl || aiDisabled) return;
+    const tK = todayKey();
+    const prompt = 'Turn the user\'s note into time-tracker entries.\n'
+      + 'Sections (use these exact ids): "study" (studying, DSA, coding practice, courses, school), "ai" (AI learning: AI/ML courses, prompting, AI tools), '
+      + '"content" (content creation: scripting, filming, editing videos/reels, writing, designing), "instagram" (Instagram: posting, engagement, stories, analytics).\n'
+      + `Today is ${dayName(tK)} ${tK}. Resolve "today", "yesterday", weekday names (the most recent past one) and dates to YYYY-MM-DD; default to today.\n`
+      + 'Convert durations to hours as a number (45 min = 0.75). If no duration is given for an activity, use 1.\n'
+      + 'notes: a short, clear description of what was done (keep the user\'s details, max 150 characters).\n'
+      + `Reply with only a JSON array, e.g. [{"section":"study","date":"${tK}","hours":2,"notes":"Dynamic programming practice"}]. Return [] if nothing can be logged.\n\n`
+      + `User's note:\n<<<\n${text.slice(0, 1000)}\n>>>`;
+    $('aiParseBtn').disabled = true;
+    $('aiParseStatus').textContent = 'Reading your note…';
+    aiCtl = new AbortController();
+    try {
+      const out = await sampleFn.json(prompt, { modelTier: 'quick', cache: false, signal: aiCtl.signal });
+      const arr = Array.isArray(out) ? out : [];
+      aiDrafts = arr.filter((x) => x && typeof x === 'object').map((x) => ({
+        section: SECTIONS.some((s) => s.id === x.section) ? x.section : 'study',
+        date: isDateKey(x.date) ? x.date : tK,
+        hours: Math.min(24, Math.max(0, Math.round((Number(x.hours) || 1) * 100) / 100)),
+        notes: String(x.notes || '').slice(0, 300),
+        added: false,
+      })).slice(0, 20);
+      $('aiParseStatus').textContent = aiDrafts.length
+        ? `Found ${aiDrafts.length} entr${aiDrafts.length === 1 ? 'y' : 'ies'}. Check them, then add.`
+        : 'I couldn’t find anything to log. Try mentioning what you did and for how long.';
+      renderDrafts();
+    } catch (err) {
+      const code = err && err.code;
+      $('aiParseStatus').textContent = code === 'cancelled' ? '' : aiErrorText(code);
+      if (AI_FATAL.has(code)) disableAi();
+    } finally {
+      aiCtl = null;
+      if (!aiDisabled) $('aiParseBtn').disabled = false;
+    }
+  });
+  aiDialog.addEventListener('close', () => { if (aiCtl) aiCtl.abort(); });
+
+  // The AI button appears only where Claude is available (the Claude artifact link).
+  if (window.claude && typeof window.claude.use === 'function') {
+    window.claude.use('sample').then((fn) => { sampleFn = fn || null; $('aiBtn').hidden = !sampleFn; }).catch(() => {});
   }
 
   // ================= Boot =================
